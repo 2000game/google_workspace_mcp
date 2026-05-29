@@ -28,6 +28,7 @@ from gdrive.drive_helpers import (
 )
 from gdrive.drive_tools import (
     create_drive_file,
+    create_drive_shortcut,
     get_drive_file_permissions,
     import_to_google_doc,
     import_to_google_sheets,
@@ -3310,3 +3311,84 @@ async def test_check_drive_file_public_access_shared_drive(mock_resolve):
 
     assert "PUBLIC ACCESS ENABLED" in result
     assert "Shared: True" in result
+
+
+# ---------------------------------------------------------------------------
+# create_drive_shortcut
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_drive_shortcut_builds_shortcut_body():
+    """The create body carries the shortcut MIME type and targetId."""
+    mock_service = Mock()
+    mock_service.files().create().execute.return_value = {
+        "id": "shortcut123",
+        "name": "Link to Report",
+        "webViewLink": "https://drive.google.com/file/d/shortcut123/view",
+        "shortcutDetails": {"targetId": "target456"},
+    }
+
+    result = await _unwrap(create_drive_shortcut)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        target_id="target456",
+        shortcut_name="Link to Report",
+        parent_folder_id="folder789",
+    )
+
+    create_kwargs = mock_service.files.return_value.create.call_args.kwargs
+    body = create_kwargs["body"]
+    assert body["mimeType"] == "application/vnd.google-apps.shortcut"
+    assert body["shortcutDetails"] == {"targetId": "target456"}
+    assert body["name"] == "Link to Report"
+    assert body["parents"] == ["folder789"]
+    assert create_kwargs["supportsAllDrives"] is True
+
+    assert "Successfully created shortcut" in result
+    assert "shortcut123" in result
+    assert "target456" in result
+
+
+@pytest.mark.asyncio
+async def test_create_drive_shortcut_omits_parents_when_no_parent():
+    """When parent_folder_id is None, 'parents' is omitted from the body."""
+    mock_service = Mock()
+    mock_service.files().create().execute.return_value = {
+        "id": "shortcut123",
+        "name": "Link to Report",
+        "webViewLink": "https://drive.google.com/file/d/shortcut123/view",
+    }
+
+    await _unwrap(create_drive_shortcut)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        target_id="target456",
+        shortcut_name="Link to Report",
+    )
+
+    body = mock_service.files.return_value.create.call_args.kwargs["body"]
+    assert "parents" not in body
+
+
+@pytest.mark.asyncio
+async def test_create_drive_shortcut_uses_google_api_retries():
+    """Shortcut creation uses googleapiclient's built-in write retry handling."""
+    mock_service = Mock()
+    mock_service.files().create().execute.return_value = {
+        "id": "shortcut123",
+        "name": "Link to Report",
+        "webViewLink": "https://drive.google.com/file/d/shortcut123/view",
+    }
+
+    await _unwrap(create_drive_shortcut)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        target_id="target456",
+        shortcut_name="Link to Report",
+    )
+
+    execute_kwargs = (
+        mock_service.files.return_value.create.return_value.execute.call_args.kwargs
+    )
+    assert execute_kwargs["num_retries"] == 3
