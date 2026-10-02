@@ -662,7 +662,7 @@ async def _format_sheet_range_impl(
     """Internal implementation for format_sheet_range.
 
     Applies formatting to a Google Sheets range including colors, number formats,
-    text wrapping, alignment, and text styling.
+    text wrapping, alignment, text styling, and dropdown lists.
 
     Args:
         service: Google Sheets API service client.
@@ -680,14 +680,21 @@ async def _format_sheet_range_impl(
         font_size: Font size in points.
         dropdown_values: Values offered as a dropdown list in every cell.
         dropdown_strict: Reject other values (default True) or only warn.
-        clear_dropdown: Remove data validation from the range.
+        clear_dropdown: Remove all data validation (dropdowns, checkboxes,
+            other rules) from the range.
 
     Returns:
         Dictionary with keys: range_name, spreadsheet_id, summary.
     """
-    wants_dropdown = bool(dropdown_values) or bool(clear_dropdown)
-    if dropdown_strict is not None and not dropdown_values:
+    wants_dropdown = dropdown_values is not None or bool(clear_dropdown)
+    if dropdown_strict is not None and dropdown_values is None:
         raise UserInputError("dropdown_strict needs dropdown_values.")
+    dropdown_request = None
+    dropdown_summary = None
+    if wants_dropdown:
+        dropdown_request, dropdown_summary = _build_dropdown_request(
+            dropdown_values, dropdown_strict, clear_dropdown
+        )
 
     # Validate at least one formatting option is provided
     has_any_format = any(
@@ -833,12 +840,8 @@ async def _format_sheet_range_impl(
         user_entered_format["verticalAlignment"] = v_align_normalized
         fields.append("userEnteredFormat.verticalAlignment")
 
-    dropdown_request = None
-    dropdown_summary = None
-    if wants_dropdown:
-        dropdown_request, dropdown_summary = _build_dropdown_request(
-            grid_range, dropdown_values, dropdown_strict, clear_dropdown
-        )
+    if dropdown_request:
+        dropdown_request["setDataValidation"]["range"] = grid_range
 
     if not user_entered_format and not dropdown_request:
         raise UserInputError(
@@ -963,8 +966,8 @@ async def format_sheet_range(
             a dropdown offering these values (e.g., ["open", "done"]).
         dropdown_strict (Optional[bool]): With dropdown_values: reject other
             input (default True) or only show a warning (False).
-        clear_dropdown (Optional[bool]): Remove the dropdown / data validation
-            from the range.
+        clear_dropdown (Optional[bool]): Remove all data validation from the
+            range: dropdowns, but also checkboxes and other validation rules.
 
     Returns:
         str: Confirmation of the applied formatting.

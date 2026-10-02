@@ -130,7 +130,7 @@ Apply visual formatting to a range: colors, number formats, text wrapping, align
 | font_size | integer | no | | Size in points |
 | dropdown_values | string[] | no | | Turns each cell into a dropdown with these values |
 | dropdown_strict | boolean | no | `true` | `false` only warns on other input. Requires `dropdown_values` |
-| clear_dropdown | boolean | no | | Removes data validation from the range |
+| clear_dropdown | boolean | no | | Removes all data validation from the range, including checkboxes |
 
 ### manage_conditional_formatting
 Add, update, or delete conditional formatting rules.

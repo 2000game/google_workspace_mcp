@@ -484,7 +484,9 @@ async def test_format_dropdown_combined_with_cell_format():
     )
 
     requests = _sent_requests(mock_service)
+    assert len(requests) == 2
     assert list(requests[0]) == ["repeatCell"]
+    assert requests[1]["setDataValidation"]["range"]["sheetId"] == 0
     assert requests[1]["setDataValidation"]["rule"]["strict"] is False
     assert "(warning only)" in result["summary"]
 
@@ -502,7 +504,7 @@ async def test_format_clear_dropdown_sends_rule_less_request():
 
     request = _sent_requests(mock_service)[0]["setDataValidation"]
     assert "rule" not in request
-    assert "dropdown removed" in result["summary"]
+    assert "data validation removed" in result["summary"]
 
 
 @pytest.mark.asyncio
@@ -512,6 +514,7 @@ async def test_format_clear_dropdown_sends_rule_less_request():
         ({"dropdown_values": ["a"], "clear_dropdown": True}, "not both"),
         ({"dropdown_values": [" ", ""]}, "at least one value"),
         ({"dropdown_strict": False, "bold": True}, "needs dropdown_values"),
+        ({"dropdown_values": [], "bold": True}, "at least one value"),
     ],
 )
 async def test_format_dropdown_invalid_input(kwargs, message):
@@ -525,3 +528,5 @@ async def test_format_dropdown_invalid_input(kwargs, message):
             **kwargs,
         )
     mock_service.spreadsheets().batchUpdate().execute.assert_not_called()
+    # Bad dropdown input is rejected before the metadata fetch, too.
+    mock_service.spreadsheets().get().execute.assert_not_called()

@@ -252,43 +252,40 @@ def _parse_hex_color(color: Optional[str]) -> Optional[dict]:
 
 
 def _build_dropdown_request(
-    grid_range: dict,
     dropdown_values: Optional[List[str]] = None,
     dropdown_strict: Optional[bool] = None,
     clear_dropdown: Optional[bool] = None,
 ) -> tuple[dict, str]:
     """
     Build a setDataValidation request that adds or removes a dropdown list.
+    The caller sets its "range" once the GridRange is known, so input errors
+    surface before any API call.
 
     Args:
-        grid_range: GridRange the validation applies to.
         dropdown_values: Allowed values, shown as a dropdown (ONE_OF_LIST).
         dropdown_strict: Reject values outside the list (default True). False
             only shows a warning.
-        clear_dropdown: Remove any data validation from the range instead.
+        clear_dropdown: Remove all data validation from the range instead
+            (dropdowns, but also checkboxes and other rules).
 
     Returns:
-        The request dict and a short human-readable summary.
+        The request dict (without range) and a short human-readable summary.
     """
     if clear_dropdown:
         if dropdown_values:
             raise UserInputError(
                 "Pass either dropdown_values or clear_dropdown, not both."
             )
-        return (
-            {"setDataValidation": {"range": grid_range}},
-            "dropdown removed",
-        )
+        return {"setDataValidation": {}}, "data validation removed"
 
     values = [str(v).strip() for v in (dropdown_values or [])]
     values = [v for v in values if v]
     if not values:
         raise UserInputError("dropdown_values must contain at least one value.")
 
-    strict = True if dropdown_strict is None else bool(dropdown_strict)
+    strict = dropdown_strict is not False
     request = {
         "setDataValidation": {
-            "range": grid_range,
             "rule": {
                 "condition": {
                     "type": "ONE_OF_LIST",
