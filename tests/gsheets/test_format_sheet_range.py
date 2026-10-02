@@ -586,3 +586,121 @@ async def test_format_borders_blank_style_falls_back_to_solid():
 
     update = _sent_requests(mock_service)[0]["updateBorders"]
     assert update["top"]["style"] == "SOLID"
+
+
+@pytest.mark.asyncio
+async def test_format_dropdown_values_sets_strict_list():
+    """dropdown_values adds a strict ONE_OF_LIST rule with the dropdown chip."""
+    mock_service = create_mock_service()
+
+    result = await _format_sheet_range_impl(
+        service=mock_service,
+        spreadsheet_id="test_spreadsheet_123",
+        range_name="C2:C20",
+        dropdown_values=["open", " in progress ", "", "done"],
+    )
+
+    requests = _sent_requests(mock_service)
+    assert len(requests) == 1
+    rule = requests[0]["setDataValidation"]["rule"]
+    assert rule["condition"] == {
+        "type": "ONE_OF_LIST",
+        "values": [
+            {"userEnteredValue": "open"},
+            {"userEnteredValue": "in progress"},
+            {"userEnteredValue": "done"},
+        ],
+    }
+    assert rule["strict"] is True
+    assert rule["showCustomUi"] is True
+    assert "dropdown [open, in progress, done]" in result["summary"]
+
+
+@pytest.mark.asyncio
+async def test_format_dropdown_combined_with_cell_format():
+    """Dropdown and cell formatting go out in one batchUpdate."""
+    mock_service = create_mock_service()
+
+    result = await _format_sheet_range_impl(
+        service=mock_service,
+        spreadsheet_id="test_spreadsheet_123",
+        range_name="A1:A5",
+        background_color="#FFF2CC",
+        dropdown_values=["1", "2", "3"],
+        dropdown_strict=False,
+    )
+
+    requests = _sent_requests(mock_service)
+    assert len(requests) == 2
+    assert list(requests[0]) == ["repeatCell"]
+    assert requests[1]["setDataValidation"]["range"]["sheetId"] == 0
+    assert requests[1]["setDataValidation"]["rule"]["strict"] is False
+    assert "(warning only)" in result["summary"]
+
+
+@pytest.mark.asyncio
+async def test_format_clear_dropdown_sends_rule_less_request():
+    mock_service = create_mock_service()
+
+    result = await _format_sheet_range_impl(
+        service=mock_service,
+        spreadsheet_id="test_spreadsheet_123",
+        range_name="A1:A5",
+        clear_dropdown=True,
+    )
+
+    request = _sent_requests(mock_service)[0]["setDataValidation"]
+    assert "rule" not in request
+    assert "data validation removed" in result["summary"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"dropdown_values": ["a"], "clear_dropdown": True}, "not both"),
+        ({"dropdown_values": [" ", ""]}, "at least one value"),
+        ({"dropdown_strict": False, "bold": True}, "needs dropdown_values"),
+        ({"dropdown_values": [], "bold": True}, "at least one value"),
+    ],
+)
+async def test_format_dropdown_invalid_input(kwargs, message):
+    mock_service = create_mock_service()
+
+    with pytest.raises(UserInputError, match=message):
+        await _format_sheet_range_impl(
+            service=mock_service,
+            spreadsheet_id="test_spreadsheet_123",
+            range_name="A1:B2",
+            **kwargs,
+        )
+    mock_service.spreadsheets().batchUpdate().execute.assert_not_called()
+    # Bad dropdown input is rejected before the metadata fetch, too.
+    mock_service.spreadsheets().get().execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_format_borders_and_dropdown_in_one_call():
+    """Cell format, borders and dropdown all go out in a single batchUpdate."""
+    mock_service = create_mock_service()
+
+    result = await _format_sheet_range_impl(
+        service=mock_service,
+        spreadsheet_id="test_spreadsheet_123",
+        range_name="A1:A5",
+        bold=True,
+        borders="outer",
+        dropdown_values=["yes", "no"],
+    )
+
+    requests = _sent_requests(mock_service)
+    assert [list(r)[0] for r in requests] == [
+        "repeatCell",
+        "updateBorders",
+        "setDataValidation",
+    ]
+    assert (
+        requests[1]["updateBorders"]["range"]
+        == requests[2]["setDataValidation"]["range"]
+    )
+    assert "SOLID borders (outer), dropdown [yes, no]" in result["summary"]

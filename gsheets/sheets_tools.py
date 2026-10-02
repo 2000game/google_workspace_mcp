@@ -28,6 +28,7 @@ from gsheets.sheets_helpers import (
     _build_boolean_rule,
     _build_tab_style_properties,
     _build_update_borders_request,
+    _build_dropdown_request,
     _build_gradient_rule,
     _fetch_cell_formulas,
     _fetch_detailed_sheet_errors,
@@ -659,11 +660,14 @@ async def _format_sheet_range_impl(
     borders: Optional[str] = None,
     border_style: Optional[str] = None,
     border_color: Optional[str] = None,
+    dropdown_values: Optional[List[str]] = None,
+    dropdown_strict: Optional[bool] = None,
+    clear_dropdown: Optional[bool] = None,
 ) -> str:
     """Internal implementation for format_sheet_range.
 
     Applies formatting to a Google Sheets range including colors, number formats,
-    text wrapping, alignment, and text styling.
+    text wrapping, alignment, text styling, borders, and dropdown lists.
 
     Args:
         service: Google Sheets API service client.
@@ -684,6 +688,10 @@ async def _format_sheet_range_impl(
         border_style: Border line style (SOLID, SOLID_MEDIUM, SOLID_THICK,
             DASHED, DOTTED, DOUBLE). Defaults to SOLID.
         border_color: Hex border color. Defaults to black.
+        dropdown_values: Values offered as a dropdown list in every cell.
+        dropdown_strict: Reject other values (default True) or only warn.
+        clear_dropdown: Remove all data validation (dropdowns, checkboxes,
+            other rules) from the range.
 
     Returns:
         Dictionary with keys: range_name, spreadsheet_id, summary.
@@ -697,6 +705,15 @@ async def _format_sheet_range_impl(
     if borders:
         border_request, border_summary = _build_update_borders_request(
             borders, border_style, border_color
+        )
+    wants_dropdown = dropdown_values is not None or bool(clear_dropdown)
+    if dropdown_strict is not None and dropdown_values is None:
+        raise UserInputError("dropdown_strict needs dropdown_values.")
+    dropdown_request = None
+    dropdown_summary = None
+    if wants_dropdown:
+        dropdown_request, dropdown_summary = _build_dropdown_request(
+            dropdown_values, dropdown_strict, clear_dropdown
         )
 
     # Validate at least one formatting option is provided
@@ -712,13 +729,14 @@ async def _format_sheet_range_impl(
             italic is not None,
             font_size is not None,
             borders,
+            wants_dropdown,
         ]
     )
     if not has_any_format:
         raise UserInputError(
             "Provide at least one formatting option (background_color, text_color, "
             "number_format_type, wrap_strategy, horizontal_alignment, vertical_alignment, "
-            "bold, italic, font_size, or borders)."
+            "bold, italic, font_size, borders, dropdown_values, or clear_dropdown)."
         )
 
     # Parse colors
@@ -845,8 +863,10 @@ async def _format_sheet_range_impl(
 
     if border_request:
         border_request["updateBorders"]["range"] = grid_range
+    if dropdown_request:
+        dropdown_request["setDataValidation"]["range"] = grid_range
 
-    if not user_entered_format and not border_request:
+    if not user_entered_format and not border_request and not dropdown_request:
         raise UserInputError(
             "No formatting applied. Verify provided formatting options."
         )
@@ -865,6 +885,8 @@ async def _format_sheet_range_impl(
         )
     if border_request:
         requests.append(border_request)
+    if dropdown_request:
+        requests.append(dropdown_request)
     request_body = {"requests": requests}
 
     await asyncio.to_thread(
@@ -898,6 +920,8 @@ async def _format_sheet_range_impl(
         applied_parts.append(f"font size {font_size}")
     if border_summary:
         applied_parts.append(border_summary)
+    if dropdown_summary:
+        applied_parts.append(dropdown_summary)
 
     summary = ", ".join(applied_parts)
 
@@ -938,10 +962,13 @@ async def format_sheet_range(
     borders: Optional[str] = None,
     border_style: Optional[str] = None,
     border_color: Optional[str] = None,
+    dropdown_values: Optional[StringList] = None,
+    dropdown_strict: Optional[bool] = None,
+    clear_dropdown: Optional[bool] = None,
 ) -> str:
     """
     Applies formatting to a range: colors, number formats, text wrapping,
-    alignment, text styling, and borders.
+    alignment, text styling, borders, and dropdown lists.
 
     Colors accept hex strings (#RRGGBB). Number formats follow Sheets types
     (e.g., NUMBER, CURRENCY, DATE, PERCENT). If no sheet name is provided,
@@ -973,6 +1000,12 @@ async def format_sheet_range(
             DASHED, DOTTED, or DOUBLE. Requires borders.
         border_color (Optional[str]): Hex border color (default black). Requires
             borders.
+        dropdown_values (Optional[List[str]]): Turns every cell in the range into
+            a dropdown offering these values (e.g., ["open", "done"]).
+        dropdown_strict (Optional[bool]): With dropdown_values: reject other
+            input (default True) or only show a warning (False).
+        clear_dropdown (Optional[bool]): Remove all data validation from the
+            range: dropdowns, but also checkboxes and other validation rules.
 
     Returns:
         str: Confirmation of the applied formatting.
@@ -1001,6 +1034,9 @@ async def format_sheet_range(
         borders=borders,
         border_style=border_style,
         border_color=border_color,
+        dropdown_values=dropdown_values,
+        dropdown_strict=dropdown_strict,
+        clear_dropdown=clear_dropdown,
     )
 
     # Build confirmation message with user email
