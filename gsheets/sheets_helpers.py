@@ -385,6 +385,57 @@ def _build_update_borders_request(
     return request, summary
 
 
+def _build_dropdown_request(
+    dropdown_values: Optional[List[str]] = None,
+    dropdown_strict: Optional[bool] = None,
+    clear_dropdown: Optional[bool] = None,
+) -> tuple[dict, str]:
+    """
+    Build a setDataValidation request that adds or removes a dropdown list.
+    The caller sets its "range" once the GridRange is known, so input errors
+    surface before any API call.
+
+    Args:
+        dropdown_values: Allowed values, shown as a dropdown (ONE_OF_LIST).
+        dropdown_strict: Reject values outside the list (default True). False
+            only shows a warning.
+        clear_dropdown: Remove all data validation from the range instead
+            (dropdowns, but also checkboxes and other rules).
+
+    Returns:
+        The request dict (without range) and a short human-readable summary.
+    """
+    if clear_dropdown:
+        if dropdown_values:
+            raise UserInputError(
+                "Pass either dropdown_values or clear_dropdown, not both."
+            )
+        return {"setDataValidation": {}}, "data validation removed"
+
+    values = [str(v).strip() for v in (dropdown_values or [])]
+    values = [v for v in values if v]
+    if not values:
+        raise UserInputError("dropdown_values must contain at least one value.")
+
+    strict = dropdown_strict is not False
+    request = {
+        "setDataValidation": {
+            "rule": {
+                "condition": {
+                    "type": "ONE_OF_LIST",
+                    "values": [{"userEnteredValue": v} for v in values],
+                },
+                "strict": strict,
+                "showCustomUi": True,
+            },
+        }
+    }
+    summary = f"dropdown [{', '.join(values)}]"
+    if not strict:
+        summary += " (warning only)"
+    return request, summary
+
+
 def _index_to_column(index: int) -> str:
     """
     Convert a zero-based column index to column letters (0 -> A, 25 -> Z, 26 -> AA).
