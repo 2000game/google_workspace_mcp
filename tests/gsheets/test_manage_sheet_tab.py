@@ -249,6 +249,8 @@ async def test_style_shows_gridlines_only():
     [
         ({"action": "style"}, "needs tab_color and/or show_gridlines"),
         ({"action": "style", "tab_color": "red"}, "#RRGGBB"),
+        ({"action": "style", "tab_color": ""}, "#RRGGBB"),
+        ({"action": "style", "tab_color": "   "}, "#RRGGBB"),
         ({"action": "rename", "new_name": "X", "tab_color": "#000000"}, "only apply"),
     ],
 )
@@ -262,5 +264,49 @@ async def test_style_invalid_input(kwargs, message):
             spreadsheet_id="sheet123",
             sheet_name="January",
             **kwargs,
+        )
+    service.spreadsheets.return_value.batchUpdate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_style_summary_normalizes_tab_color():
+    service = _service(TWO_SHEETS)
+
+    result = await _unwrap(sheets_tools.manage_sheet_tab)(
+        service=service,
+        user_google_email="user@example.com",
+        spreadsheet_id="sheet123",
+        sheet_name="January",
+        action="style",
+        tab_color=" ff0000 ",
+    )
+
+    assert "tab color #FF0000" in result
+
+
+@pytest.mark.asyncio
+async def test_style_gridlines_rejected_on_object_sheet():
+    service = _service(
+        [
+            {"properties": {"sheetId": 0, "title": "January", "index": 0}},
+            {
+                "properties": {
+                    "sheetId": 9,
+                    "title": "Chart",
+                    "index": 1,
+                    "sheetType": "OBJECT",
+                }
+            },
+        ]
+    )
+
+    with pytest.raises(UserInputError, match="has no gridlines"):
+        await _unwrap(sheets_tools.manage_sheet_tab)(
+            service=service,
+            user_google_email="user@example.com",
+            spreadsheet_id="sheet123",
+            sheet_name="Chart",
+            action="style",
+            show_gridlines=False,
         )
     service.spreadsheets.return_value.batchUpdate.assert_not_called()

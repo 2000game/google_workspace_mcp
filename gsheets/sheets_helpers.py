@@ -273,13 +273,16 @@ def _build_tab_style_properties(
     fields = []
     parts = []
     if tab_color is not None:
-        if tab_color.strip().lower() == "none":
+        color = tab_color.strip()
+        if not color:
+            raise UserInputError("tab_color must be a hex color (#RRGGBB) or 'none'.")
+        if color.lower() == "none":
             # An empty colour style with the field in the mask clears it.
             properties["tabColorStyle"] = {}
             parts.append("removed tab color")
         else:
-            properties["tabColorStyle"] = {"rgbColor": _parse_hex_color(tab_color)}
-            parts.append(f"tab color {tab_color}")
+            properties["tabColorStyle"] = {"rgbColor": _parse_hex_color(color)}
+            parts.append(f"tab color #{color.lstrip('#').upper()}")
         fields.append("tabColorStyle")
     if show_gridlines is not None:
         properties["gridProperties"] = {"hideGridlines": not show_gridlines}

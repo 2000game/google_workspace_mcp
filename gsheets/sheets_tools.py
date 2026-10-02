@@ -2457,6 +2457,11 @@ async def manage_sheet_tab(
             fields = "hidden"
             summary = f"{action_lower} sheet '{sheet_name}'"
         elif action_lower == "style":
+            sheet_type = target_sheet["properties"].get("sheetType", "GRID")
+            if show_gridlines is not None and sheet_type != "GRID":
+                raise UserInputError(
+                    f"'{sheet_name}' is a {sheet_type} sheet and has no gridlines."
+                )
             properties.update(style_properties)
             fields = style_fields
             summary = f"styled sheet '{sheet_name}' ({style_summary})"
