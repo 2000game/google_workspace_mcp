@@ -251,6 +251,81 @@ def _parse_hex_color(color: Optional[str]) -> Optional[dict]:
     return {"red": red, "green": green, "blue": blue}
 
 
+BORDER_SIDES = ("top", "bottom", "left", "right", "innerHorizontal", "innerVertical")
+BORDER_SIDE_ALIASES = {
+    "all": BORDER_SIDES,
+    "outer": ("top", "bottom", "left", "right"),
+    "inner": ("innerHorizontal", "innerVertical"),
+    "top": ("top",),
+    "bottom": ("bottom",),
+    "left": ("left",),
+    "right": ("right",),
+    "inner_horizontal": ("innerHorizontal",),
+    "inner_vertical": ("innerVertical",),
+}
+BORDER_STYLES = {"DOTTED", "DASHED", "SOLID", "SOLID_MEDIUM", "SOLID_THICK", "DOUBLE"}
+
+
+def _build_update_borders_request(
+    grid_range: dict,
+    borders: str,
+    border_style: Optional[str] = None,
+    border_color: Optional[str] = None,
+) -> tuple[dict, str]:
+    """
+    Build an updateBorders request for a grid range.
+
+    Args:
+        grid_range: GridRange the borders apply to.
+        borders: Comma-separated sides: all, outer, inner, top, bottom, left,
+            right, inner_horizontal, inner_vertical. "none" removes all borders.
+        border_style: One of BORDER_STYLES. Defaults to SOLID.
+        border_color: Hex color. Defaults to black.
+
+    Returns:
+        The request dict and a short human-readable summary.
+    """
+    tokens = [t.strip().lower() for t in borders.split(",") if t.strip()]
+    if not tokens:
+        raise UserInputError("borders must name at least one side.")
+
+    if "none" in tokens:
+        if tokens != ["none"]:
+            raise UserInputError("borders='none' cannot be combined with sides.")
+        border: dict = {"style": "NONE"}
+        sides = BORDER_SIDES
+        summary = "borders removed"
+    else:
+        unknown = [t for t in tokens if t not in BORDER_SIDE_ALIASES]
+        if unknown:
+            raise UserInputError(
+                f"Unknown border side(s) {unknown}. Use 'none' alone, or any of "
+                f"{sorted(BORDER_SIDE_ALIASES)}."
+            )
+        style = (border_style or "SOLID").strip().upper()
+        if style not in BORDER_STYLES:
+            raise UserInputError(
+                f"border_style must be one of {sorted(BORDER_STYLES)}."
+            )
+        border = {
+            "style": style,
+            "color": _parse_hex_color(border_color)
+            or {"red": 0.0, "green": 0.0, "blue": 0.0},
+        }
+        # dict.fromkeys keeps order and drops sides named twice ("all,top").
+        sides = tuple(
+            dict.fromkeys(side for t in tokens for side in BORDER_SIDE_ALIASES[t])
+        )
+        summary = f"{style} borders ({', '.join(tokens)})"
+        if border_color:
+            summary += f" in {border_color}"
+
+    request = {"updateBorders": {"range": grid_range}}
+    for side in sides:
+        request["updateBorders"][side] = dict(border)
+    return request, summary
+
+
 def _index_to_column(index: int) -> str:
     """
     Convert a zero-based column index to column letters (0 -> A, 25 -> Z, 26 -> AA).

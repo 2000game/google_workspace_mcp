@@ -12,6 +12,7 @@ import os
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
+from core.utils import UserInputError
 from gsheets.sheets_tools import _format_sheet_range_impl
 
 
@@ -434,3 +435,116 @@ async def test_format_confirmation_message_includes_new_params():
 
     assert result["spreadsheet_id"] == "test_spreadsheet_123"
     assert result["range_name"] == "A1:C10"
+
+
+def _sent_requests(mock_service):
+    return mock_service.spreadsheets().batchUpdate.call_args[1]["body"]["requests"]
+
+
+@pytest.mark.asyncio
+async def test_format_borders_outer_defaults_to_solid_black():
+    """borders="outer" draws the four outer edges, SOLID and black by default."""
+    mock_service = create_mock_service()
+
+    result = await _format_sheet_range_impl(
+        service=mock_service,
+        spreadsheet_id="test_spreadsheet_123",
+        range_name="A1:C3",
+        borders="outer",
+    )
+
+    requests = _sent_requests(mock_service)
+    assert len(requests) == 1
+    update = requests[0]["updateBorders"]
+    assert set(update) == {"range", "top", "bottom", "left", "right"}
+    assert update["top"] == {
+        "style": "SOLID",
+        "color": {"red": 0.0, "green": 0.0, "blue": 0.0},
+    }
+    assert "SOLID borders (outer)" in result["summary"]
+
+
+@pytest.mark.asyncio
+async def test_format_borders_combined_with_cell_format():
+    """Borders and cell formatting go out in one batchUpdate, format first."""
+    mock_service = create_mock_service()
+
+    await _format_sheet_range_impl(
+        service=mock_service,
+        spreadsheet_id="test_spreadsheet_123",
+        range_name="A1:B2",
+        background_color="#FFEECC",
+        borders="bottom,inner_horizontal",
+        border_style="dashed",
+        border_color="#FF0000",
+    )
+
+    requests = _sent_requests(mock_service)
+    assert list(requests[0]) == ["repeatCell"]
+    update = requests[1]["updateBorders"]
+    assert set(update) == {"range", "bottom", "innerHorizontal"}
+    assert update["bottom"]["style"] == "DASHED"
+    assert update["bottom"]["color"] == {"red": 1.0, "green": 0.0, "blue": 0.0}
+
+
+@pytest.mark.asyncio
+async def test_format_borders_all_deduplicates_sides():
+    mock_service = create_mock_service()
+
+    await _format_sheet_range_impl(
+        service=mock_service,
+        spreadsheet_id="test_spreadsheet_123",
+        range_name="A1:B2",
+        borders="all,top",
+    )
+
+    update = _sent_requests(mock_service)[0]["updateBorders"]
+    assert set(update) - {"range"} == {
+        "top",
+        "bottom",
+        "left",
+        "right",
+        "innerHorizontal",
+        "innerVertical",
+    }
+
+
+@pytest.mark.asyncio
+async def test_format_borders_none_clears_every_side():
+    mock_service = create_mock_service()
+
+    result = await _format_sheet_range_impl(
+        service=mock_service,
+        spreadsheet_id="test_spreadsheet_123",
+        range_name="A1:B2",
+        borders="none",
+    )
+
+    update = _sent_requests(mock_service)[0]["updateBorders"]
+    assert len(update) == 7
+    assert all(update[side] == {"style": "NONE"} for side in update if side != "range")
+    assert "borders removed" in result["summary"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kwargs, message",
+    [
+        ({"borders": "diagonal"}, "Unknown border side"),
+        ({"borders": "none,top"}, "cannot be combined"),
+        ({"borders": "all", "border_style": "WAVY"}, "border_style must be one of"),
+        ({"border_style": "SOLID"}, "need borders"),
+        ({"border_color": "#000000"}, "need borders"),
+    ],
+)
+async def test_format_borders_invalid_input(kwargs, message):
+    mock_service = create_mock_service()
+
+    with pytest.raises(UserInputError, match=message):
+        await _format_sheet_range_impl(
+            service=mock_service,
+            spreadsheet_id="test_spreadsheet_123",
+            range_name="A1:B2",
+            **kwargs,
+        )
+    mock_service.spreadsheets().batchUpdate().execute.assert_not_called()
