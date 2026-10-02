@@ -251,6 +251,46 @@ def _parse_hex_color(color: Optional[str]) -> Optional[dict]:
     return {"red": red, "green": green, "blue": blue}
 
 
+def _build_tab_style_properties(
+    tab_color: Optional[str] = None,
+    show_gridlines: Optional[bool] = None,
+) -> tuple[dict, str, str]:
+    """
+    Build the sheet properties for manage_sheet_tab's "style" action.
+
+    Args:
+        tab_color: Hex color for the tab, or "none" to remove it.
+        show_gridlines: Whether the sheet shows gridlines.
+
+    Returns:
+        The properties to set (without sheetId), the fields mask, and a
+        short human-readable summary.
+    """
+    if tab_color is None and show_gridlines is None:
+        raise UserInputError("action='style' needs tab_color and/or show_gridlines.")
+
+    properties: dict = {}
+    fields = []
+    parts = []
+    if tab_color is not None:
+        color = tab_color.strip()
+        if not color:
+            raise UserInputError("tab_color must be a hex color (#RRGGBB) or 'none'.")
+        if color.lower() == "none":
+            # An empty colour style with the field in the mask clears it.
+            properties["tabColorStyle"] = {}
+            parts.append("removed tab color")
+        else:
+            properties["tabColorStyle"] = {"rgbColor": _parse_hex_color(color)}
+            parts.append(f"tab color #{color.lstrip('#').upper()}")
+        fields.append("tabColorStyle")
+    if show_gridlines is not None:
+        properties["gridProperties"] = {"hideGridlines": not show_gridlines}
+        fields.append("gridProperties.hideGridlines")
+        parts.append("gridlines shown" if show_gridlines else "gridlines hidden")
+    return properties, ",".join(fields), ", ".join(parts)
+
+
 BORDER_SIDES = ("top", "bottom", "left", "right", "innerHorizontal", "innerVertical")
 # Keys are normalized: lowercase with "_" and "-" removed, so "inner_horizontal",
 # "inner-horizontal" and the API's own "innerHorizontal" all match.
