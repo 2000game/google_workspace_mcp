@@ -252,6 +252,8 @@ def _parse_hex_color(color: Optional[str]) -> Optional[dict]:
 
 
 BORDER_SIDES = ("top", "bottom", "left", "right", "innerHorizontal", "innerVertical")
+# Keys are normalized: lowercase with "_" and "-" removed, so "inner_horizontal",
+# "inner-horizontal" and the API's own "innerHorizontal" all match.
 BORDER_SIDE_ALIASES = {
     "all": BORDER_SIDES,
     "outer": ("top", "bottom", "left", "right"),
@@ -260,49 +262,66 @@ BORDER_SIDE_ALIASES = {
     "bottom": ("bottom",),
     "left": ("left",),
     "right": ("right",),
-    "inner_horizontal": ("innerHorizontal",),
-    "inner_vertical": ("innerVertical",),
+    "innerhorizontal": ("innerHorizontal",),
+    "innervertical": ("innerVertical",),
 }
+BORDER_SIDE_NAMES = (
+    "all",
+    "outer",
+    "inner",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "inner_horizontal",
+    "inner_vertical",
+)
 BORDER_STYLES = {"DOTTED", "DASHED", "SOLID", "SOLID_MEDIUM", "SOLID_THICK", "DOUBLE"}
 
 
 def _build_update_borders_request(
-    grid_range: dict,
     borders: str,
     border_style: Optional[str] = None,
     border_color: Optional[str] = None,
 ) -> tuple[dict, str]:
     """
-    Build an updateBorders request for a grid range.
+    Build an updateBorders request. The caller sets its "range" once the
+    GridRange is known, so input errors surface before any API call.
 
     Args:
-        grid_range: GridRange the borders apply to.
         borders: Comma-separated sides: all, outer, inner, top, bottom, left,
             right, inner_horizontal, inner_vertical. "none" removes all borders.
         border_style: One of BORDER_STYLES. Defaults to SOLID.
         border_color: Hex color. Defaults to black.
 
     Returns:
-        The request dict and a short human-readable summary.
+        The request dict (without range) and a short human-readable summary.
     """
     tokens = [t.strip().lower() for t in borders.split(",") if t.strip()]
     if not tokens:
         raise UserInputError("borders must name at least one side.")
+    style_given = bool(border_style and border_style.strip())
+    color_given = bool(border_color and border_color.strip())
 
     if "none" in tokens:
         if tokens != ["none"]:
             raise UserInputError("borders='none' cannot be combined with sides.")
+        if style_given or color_given:
+            raise UserInputError(
+                "borders='none' removes borders; drop border_style and border_color."
+            )
         border: dict = {"style": "NONE"}
         sides = BORDER_SIDES
         summary = "borders removed"
     else:
-        unknown = [t for t in tokens if t not in BORDER_SIDE_ALIASES]
+        keys = [t.replace("_", "").replace("-", "") for t in tokens]
+        unknown = [t for t, k in zip(tokens, keys) if k not in BORDER_SIDE_ALIASES]
         if unknown:
             raise UserInputError(
                 f"Unknown border side(s) {unknown}. Use 'none' alone, or any of "
-                f"{sorted(BORDER_SIDE_ALIASES)}."
+                f"{list(BORDER_SIDE_NAMES)}."
             )
-        style = (border_style or "SOLID").strip().upper()
+        style = border_style.strip().upper() if style_given else "SOLID"
         if style not in BORDER_STYLES:
             raise UserInputError(
                 f"border_style must be one of {sorted(BORDER_STYLES)}."
@@ -314,13 +333,13 @@ def _build_update_borders_request(
         }
         # dict.fromkeys keeps order and drops sides named twice ("all,top").
         sides = tuple(
-            dict.fromkeys(side for t in tokens for side in BORDER_SIDE_ALIASES[t])
+            dict.fromkeys(side for k in keys for side in BORDER_SIDE_ALIASES[k])
         )
         summary = f"{style} borders ({', '.join(tokens)})"
-        if border_color:
-            summary += f" in {border_color}"
+        if color_given:
+            summary += f" in {border_color.strip()}"
 
-    request = {"updateBorders": {"range": grid_range}}
+    request: dict = {"updateBorders": {}}
     for side in sides:
         request["updateBorders"][side] = dict(border)
     return request, summary

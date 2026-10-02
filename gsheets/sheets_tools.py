@@ -691,6 +691,12 @@ async def _format_sheet_range_impl(
         raise UserInputError(
             "border_style and border_color need borders to say which sides to draw."
         )
+    border_request = None
+    border_summary = None
+    if borders:
+        border_request, border_summary = _build_update_borders_request(
+            borders, border_style, border_color
+        )
 
     # Validate at least one formatting option is provided
     has_any_format = any(
@@ -836,12 +842,8 @@ async def _format_sheet_range_impl(
         user_entered_format["verticalAlignment"] = v_align_normalized
         fields.append("userEnteredFormat.verticalAlignment")
 
-    border_request = None
-    border_summary = None
-    if borders:
-        border_request, border_summary = _build_update_borders_request(
-            grid_range, borders, border_style, border_color
-        )
+    if border_request:
+        border_request["updateBorders"]["range"] = grid_range
 
     if not user_entered_format and not border_request:
         raise UserInputError(

@@ -535,6 +535,8 @@ async def test_format_borders_none_clears_every_side():
         ({"borders": "all", "border_style": "WAVY"}, "border_style must be one of"),
         ({"border_style": "SOLID"}, "need borders"),
         ({"border_color": "#000000"}, "need borders"),
+        ({"borders": "none", "border_style": "WAVY"}, "drop border_style"),
+        ({"borders": "none", "border_color": "#FF0000"}, "drop border_style"),
     ],
 )
 async def test_format_borders_invalid_input(kwargs, message):
@@ -548,3 +550,39 @@ async def test_format_borders_invalid_input(kwargs, message):
             **kwargs,
         )
     mock_service.spreadsheets().batchUpdate().execute.assert_not_called()
+    # Bad border input is rejected before the metadata fetch, too.
+    mock_service.spreadsheets().get().execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "side", ["innerHorizontal", "inner-horizontal", "INNER_HORIZONTAL"]
+)
+async def test_format_borders_accepts_api_and_hyphen_spellings(side):
+    mock_service = create_mock_service()
+
+    await _format_sheet_range_impl(
+        service=mock_service,
+        spreadsheet_id="test_spreadsheet_123",
+        range_name="A1:B2",
+        borders=side,
+    )
+
+    update = _sent_requests(mock_service)[0]["updateBorders"]
+    assert set(update) == {"range", "innerHorizontal"}
+
+
+@pytest.mark.asyncio
+async def test_format_borders_blank_style_falls_back_to_solid():
+    mock_service = create_mock_service()
+
+    await _format_sheet_range_impl(
+        service=mock_service,
+        spreadsheet_id="test_spreadsheet_123",
+        range_name="A1:B2",
+        borders="outer",
+        border_style="  ",
+    )
+
+    update = _sent_requests(mock_service)[0]["updateBorders"]
+    assert update["top"]["style"] == "SOLID"
