@@ -27,6 +27,7 @@ from gsheets.sheets_helpers import (
     _column_to_index,
     _build_boolean_rule,
     _build_tab_style_properties,
+    _build_update_borders_request,
     _build_gradient_rule,
     _fetch_cell_formulas,
     _fetch_detailed_sheet_errors,
@@ -655,6 +656,9 @@ async def _format_sheet_range_impl(
     bold: Optional[bool] = None,
     italic: Optional[bool] = None,
     font_size: Optional[int] = None,
+    borders: Optional[str] = None,
+    border_style: Optional[str] = None,
+    border_color: Optional[str] = None,
 ) -> str:
     """Internal implementation for format_sheet_range.
 
@@ -675,10 +679,26 @@ async def _format_sheet_range_impl(
         bold: Whether to apply bold formatting.
         italic: Whether to apply italic formatting.
         font_size: Font size in points.
+        borders: Comma-separated border sides (all, outer, inner, top, bottom,
+            left, right, inner_horizontal, inner_vertical), or "none".
+        border_style: Border line style (SOLID, SOLID_MEDIUM, SOLID_THICK,
+            DASHED, DOTTED, DOUBLE). Defaults to SOLID.
+        border_color: Hex border color. Defaults to black.
 
     Returns:
         Dictionary with keys: range_name, spreadsheet_id, summary.
     """
+    if (border_style or border_color) and not borders:
+        raise UserInputError(
+            "border_style and border_color need borders to say which sides to draw."
+        )
+    border_request = None
+    border_summary = None
+    if borders:
+        border_request, border_summary = _build_update_borders_request(
+            borders, border_style, border_color
+        )
+
     # Validate at least one formatting option is provided
     has_any_format = any(
         [
@@ -691,13 +711,14 @@ async def _format_sheet_range_impl(
             bold is not None,
             italic is not None,
             font_size is not None,
+            borders,
         ]
     )
     if not has_any_format:
         raise UserInputError(
             "Provide at least one formatting option (background_color, text_color, "
             "number_format_type, wrap_strategy, horizontal_alignment, vertical_alignment, "
-            "bold, italic, or font_size)."
+            "bold, italic, font_size, or borders)."
         )
 
     # Parse colors
@@ -822,14 +843,18 @@ async def _format_sheet_range_impl(
         user_entered_format["verticalAlignment"] = v_align_normalized
         fields.append("userEnteredFormat.verticalAlignment")
 
-    if not user_entered_format:
+    if border_request:
+        border_request["updateBorders"]["range"] = grid_range
+
+    if not user_entered_format and not border_request:
         raise UserInputError(
             "No formatting applied. Verify provided formatting options."
         )
 
     # Build and execute request
-    request_body = {
-        "requests": [
+    requests = []
+    if user_entered_format:
+        requests.append(
             {
                 "repeatCell": {
                     "range": grid_range,
@@ -837,8 +862,10 @@ async def _format_sheet_range_impl(
                     "fields": ",".join(fields),
                 }
             }
-        ]
-    }
+        )
+    if border_request:
+        requests.append(border_request)
+    request_body = {"requests": requests}
 
     await asyncio.to_thread(
         service.spreadsheets()
@@ -869,6 +896,8 @@ async def _format_sheet_range_impl(
         applied_parts.append("italic" if italic else "not italic")
     if font_size is not None:
         applied_parts.append(f"font size {font_size}")
+    if border_summary:
+        applied_parts.append(border_summary)
 
     summary = ", ".join(applied_parts)
 
@@ -906,10 +935,13 @@ async def format_sheet_range(
     bold: Optional[bool] = None,
     italic: Optional[bool] = None,
     font_size: Optional[int] = None,
+    borders: Optional[str] = None,
+    border_style: Optional[str] = None,
+    border_color: Optional[str] = None,
 ) -> str:
     """
     Applies formatting to a range: colors, number formats, text wrapping,
-    alignment, and text styling.
+    alignment, text styling, and borders.
 
     Colors accept hex strings (#RRGGBB). Number formats follow Sheets types
     (e.g., NUMBER, CURRENCY, DATE, PERCENT). If no sheet name is provided,
@@ -933,6 +965,14 @@ async def format_sheet_range(
         bold (Optional[bool]): Whether to apply bold formatting.
         italic (Optional[bool]): Whether to apply italic formatting.
         font_size (Optional[int]): Font size in points.
+        borders (Optional[str]): Which borders to draw, comma-separated: all,
+            outer, inner, top, bottom, left, right, inner_horizontal,
+            inner_vertical (e.g., "outer" or "bottom,inner_horizontal").
+            "none" removes every border in the range.
+        border_style (Optional[str]): SOLID (default), SOLID_MEDIUM, SOLID_THICK,
+            DASHED, DOTTED, or DOUBLE. Requires borders.
+        border_color (Optional[str]): Hex border color (default black). Requires
+            borders.
 
     Returns:
         str: Confirmation of the applied formatting.
@@ -958,6 +998,9 @@ async def format_sheet_range(
         bold=bold,
         italic=italic,
         font_size=font_size,
+        borders=borders,
+        border_style=border_style,
+        border_color=border_color,
     )
 
     # Build confirmation message with user email

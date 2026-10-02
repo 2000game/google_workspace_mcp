@@ -291,6 +291,100 @@ def _build_tab_style_properties(
     return properties, ",".join(fields), ", ".join(parts)
 
 
+BORDER_SIDES = ("top", "bottom", "left", "right", "innerHorizontal", "innerVertical")
+# Keys are normalized: lowercase with "_" and "-" removed, so "inner_horizontal",
+# "inner-horizontal" and the API's own "innerHorizontal" all match.
+BORDER_SIDE_ALIASES = {
+    "all": BORDER_SIDES,
+    "outer": ("top", "bottom", "left", "right"),
+    "inner": ("innerHorizontal", "innerVertical"),
+    "top": ("top",),
+    "bottom": ("bottom",),
+    "left": ("left",),
+    "right": ("right",),
+    "innerhorizontal": ("innerHorizontal",),
+    "innervertical": ("innerVertical",),
+}
+BORDER_SIDE_NAMES = (
+    "all",
+    "outer",
+    "inner",
+    "top",
+    "bottom",
+    "left",
+    "right",
+    "inner_horizontal",
+    "inner_vertical",
+)
+BORDER_STYLES = {"DOTTED", "DASHED", "SOLID", "SOLID_MEDIUM", "SOLID_THICK", "DOUBLE"}
+
+
+def _build_update_borders_request(
+    borders: str,
+    border_style: Optional[str] = None,
+    border_color: Optional[str] = None,
+) -> tuple[dict, str]:
+    """
+    Build an updateBorders request. The caller sets its "range" once the
+    GridRange is known, so input errors surface before any API call.
+
+    Args:
+        borders: Comma-separated sides: all, outer, inner, top, bottom, left,
+            right, inner_horizontal, inner_vertical. "none" removes all borders.
+        border_style: One of BORDER_STYLES. Defaults to SOLID.
+        border_color: Hex color. Defaults to black.
+
+    Returns:
+        The request dict (without range) and a short human-readable summary.
+    """
+    tokens = [t.strip().lower() for t in borders.split(",") if t.strip()]
+    if not tokens:
+        raise UserInputError("borders must name at least one side.")
+    style_given = bool(border_style and border_style.strip())
+    color_given = bool(border_color and border_color.strip())
+
+    if "none" in tokens:
+        if tokens != ["none"]:
+            raise UserInputError("borders='none' cannot be combined with sides.")
+        if style_given or color_given:
+            raise UserInputError(
+                "borders='none' removes borders; drop border_style and border_color."
+            )
+        border: dict = {"style": "NONE"}
+        sides = BORDER_SIDES
+        summary = "borders removed"
+    else:
+        keys = [t.replace("_", "").replace("-", "") for t in tokens]
+        unknown = [t for t, k in zip(tokens, keys) if k not in BORDER_SIDE_ALIASES]
+        if unknown:
+            raise UserInputError(
+                f"Unknown border side(s) {unknown}. Use 'none' alone, or any of "
+                f"{list(BORDER_SIDE_NAMES)}."
+            )
+        style = border_style.strip().upper() if style_given else "SOLID"
+        if style not in BORDER_STYLES:
+            raise UserInputError(
+                f"border_style must be one of {sorted(BORDER_STYLES)}."
+            )
+        border = {
+            "style": style,
+            "color": _parse_hex_color(border_color)
+            or {"red": 0.0, "green": 0.0, "blue": 0.0},
+        }
+        # dict.fromkeys keeps order and drops sides named twice ("all,top").
+        sides = tuple(
+            dict.fromkeys(side for k in keys for side in BORDER_SIDE_ALIASES[k])
+        )
+        summary = f"{style} borders ({', '.join(tokens)})"
+        if color_given:
+            summary += f" in {border_color.strip()}"
+
+    request: dict = {"updateBorders": {}}
+    for side in sides:
+        request["updateBorders"][side] = dict(border)
+    return request, summary
+
+
 def _index_to_column(index: int) -> str:
     """
     Convert a zero-based column index to column letters (0 -> A, 25 -> Z, 26 -> AA).
