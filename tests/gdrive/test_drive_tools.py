@@ -29,6 +29,7 @@ from gdrive.drive_helpers import (
 from gdrive.drive_tools import (
     create_drive_file,
     create_drive_shortcut,
+    create_drive_shortcuts,
     get_drive_file_permissions,
     import_to_google_doc,
     import_to_google_sheets,
@@ -3392,3 +3393,72 @@ async def test_create_drive_shortcut_uses_google_api_retries():
         mock_service.files.return_value.create.return_value.execute.call_args.kwargs
     )
     assert execute_kwargs["num_retries"] == 3
+
+
+# ---------------------------------------------------------------------------
+# create_drive_shortcuts (batch)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_drive_shortcuts_partial_failure_and_default_parent():
+    """A failing entry is reported without aborting the rest."""
+    mock_service = Mock()
+    mock_service.files.return_value.create.return_value.execute.side_effect = [
+        {"id": "s1", "name": "A", "webViewLink": "https://drive/s1"},
+        Exception("boom"),
+        {"id": "s3", "name": "C", "webViewLink": "https://drive/s3"},
+    ]
+
+    result = await _unwrap(create_drive_shortcuts)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        shortcuts=[
+            {"target_id": "t1", "shortcut_name": "A"},
+            {"target_id": "t2", "shortcut_name": "B"},
+            {"target_id": "t3", "shortcut_name": "C", "parent_folder_id": "own"},
+        ],
+        default_parent_folder_id="def",
+    )
+
+    lines = result.split("\n")
+    assert lines[0] == "OK A -> s1 -> https://drive/s1"
+    assert lines[1] == "FEHLER B: boom"
+    assert lines[2] == "OK C -> s3 -> https://drive/s3"
+    bodies = [
+        c.kwargs["body"] for c in mock_service.files.return_value.create.call_args_list
+    ]
+    assert bodies[0]["parents"] == ["def"]
+    assert bodies[2]["parents"] == ["own"]
+    assert bodies[0]["mimeType"] == "application/vnd.google-apps.shortcut"
+
+
+@pytest.mark.asyncio
+async def test_create_drive_shortcuts_empty_list():
+    mock_service = Mock()
+    result = await _unwrap(create_drive_shortcuts)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        shortcuts=[],
+    )
+    assert "Keine Shortcuts" in result
+    mock_service.files.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_create_drive_shortcuts_missing_fields():
+    mock_service = Mock()
+    result = await _unwrap(create_drive_shortcuts)(
+        service=mock_service,
+        user_google_email="user@example.com",
+        shortcuts=[
+            {"shortcut_name": "NoTarget"},
+            {"target_id": "t"},
+            "kaputt",
+        ],
+    )
+    lines = result.split("\n")
+    assert lines[0] == "FEHLER NoTarget: fehlende Felder: target_id"
+    assert lines[1] == "FEHLER Eintrag 2: fehlende Felder: shortcut_name"
+    assert lines[2].startswith("FEHLER Eintrag 3")
+    mock_service.files.assert_not_called()

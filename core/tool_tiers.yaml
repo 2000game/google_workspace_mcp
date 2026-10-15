@@ -28,6 +28,7 @@ drive:
     - create_drive_file
     - create_drive_folder
     - create_drive_shortcut
+    - create_drive_shortcuts
     - import_to_google_doc
     - import_to_google_slides
     - import_to_google_sheets

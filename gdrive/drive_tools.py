@@ -1304,6 +1304,93 @@ async def create_drive_shortcut(
 
 
 @server.tool(
+    title="Create Drive Shortcuts (Batch)",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("create_drive_shortcuts", service_type="drive")
+@require_google_service("drive", "drive_file")
+async def create_drive_shortcuts(
+    service,
+    user_google_email: str,
+    shortcuts: List[Dict[str, Any]],
+    default_parent_folder_id: Optional[str] = None,
+) -> str:
+    """
+    Creates several Google Drive shortcuts in one call. Errors are collected per entry
+    instead of aborting the batch.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        shortcuts (List[Dict]): Entries with "target_id" (required), "shortcut_name" (required)
+            and optional "parent_folder_id".
+        default_parent_folder_id (Optional[str]): Parent folder used for entries without their own "parent_folder_id". Defaults to My Drive root.
+
+    Returns:
+        str: One line per entry: "OK name -> id -> link" or "FEHLER name: reason".
+    """
+    logger.info(
+        f"[create_drive_shortcuts] Invoked. Email: '{user_google_email}', "
+        f"Count: {len(shortcuts) if shortcuts else 0}"
+    )
+
+    if not shortcuts:
+        return "Keine Shortcuts angegeben."
+
+    lines: List[str] = []
+    for index, entry in enumerate(shortcuts, start=1):
+        if not isinstance(entry, dict):
+            lines.append(f"FEHLER Eintrag {index}: kein Objekt")
+            continue
+        target_id = entry.get("target_id")
+        name = entry.get("shortcut_name")
+        label = name or f"Eintrag {index}"
+        missing = [
+            key
+            for key, value in (("target_id", target_id), ("shortcut_name", name))
+            if not value
+        ]
+        if missing:
+            lines.append(f"FEHLER {label}: fehlende Felder: {', '.join(missing)}")
+            continue
+
+        metadata = {
+            "name": name,
+            "mimeType": SHORTCUT_MIME_TYPE,
+            "shortcutDetails": {"targetId": target_id},
+        }
+        parent = entry.get("parent_folder_id") or default_parent_folder_id
+        if parent:
+            metadata["parents"] = [parent]
+
+        try:
+            created = await asyncio.to_thread(
+                service.files()
+                .create(
+                    body=metadata,
+                    fields="id, name, webViewLink, shortcutDetails",
+                    supportsAllDrives=True,
+                )
+                .execute,
+                num_retries=GOOGLE_API_WRITE_RETRIES,
+            )
+        except Exception as e:
+            lines.append(f"FEHLER {name}: {e}")
+            continue
+
+        link = created.get("webViewLink", "No link available")
+        lines.append(
+            f"OK {created.get('name', name)} -> {created.get('id', 'N/A')} -> {link}"
+        )
+
+    return "\n".join(lines)
+
+
+@server.tool(
     title="Import to Google Doc",
     annotations=ToolAnnotations(
         readOnlyHint=False,
