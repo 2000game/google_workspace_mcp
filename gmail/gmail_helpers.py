@@ -616,8 +616,12 @@ def _build_forward_content(
     forward_message: Optional[str],
     forward_message_format: Literal["plain", "html"],
     subject_override: Optional[str],
+    signature_html: str = "",
 ) -> tuple[str, str, Literal["plain", "html"]]:
     """Build the (subject, body, body_format) for a forwarded message.
+
+    An optional signature_html is placed after the note and before the forwarded
+    block, as Gmail does for a forward composed with a signature.
 
     Pure formatting kept out of the @server.tool wrapper so it is independently
     testable: quotes the original headers/body and prepends an optional note.
@@ -649,6 +653,8 @@ def _build_forward_content(
         "</div>"
     )
 
+    has_signature = bool(signature_html and signature_html.strip())
+
     # Render as HTML when the original is HTML or the note is explicitly HTML.
     if has_html or (forward_message and forward_message_format == "html"):
         note_html = ""
@@ -658,6 +664,8 @@ def _build_forward_content(
             else:
                 escaped = html.escape(forward_message).replace("\n", "<br/>")
                 note_html = f"<div>{escaped}</div><br/>"
+        if has_signature:
+            note_html += f"{_wrap_signature_html(signature_html)}<br/><br/>"
         original_body_html = (
             original_html
             if has_html
@@ -671,6 +679,10 @@ def _build_forward_content(
         body_format: Literal["plain", "html"] = "html"
     else:
         note = f"{forward_message}\n\n" if forward_message else ""
+        if has_signature:
+            signature_text = _signature_html_to_text(signature_html).strip()
+            if signature_text:
+                note += f"{signature_text}\n\n"
         forward_body = f"{note}{forward_header_text}\n\n{original_text}"
         body_format = "plain"
 

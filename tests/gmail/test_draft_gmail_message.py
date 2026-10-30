@@ -2079,3 +2079,127 @@ async def test_send_gmail_message_rejects_an_unresolvable_thread_id():
         )
 
     mock_service.users().messages().send.assert_not_called()
+
+
+def _forward_original(html=True, with_attachment=False):
+    headers = [
+        {"name": "Subject", "value": "Klimaanlage Wartung"},
+        {"name": "From", "value": "Florian <f@example.com>"},
+        {"name": "To", "value": "orig@example.com"},
+        {"name": "Date", "value": "Mon, 1 Jan 2024 10:00:00 -0000"},
+    ]
+    parts = [
+        {
+            "mimeType": "text/plain",
+            "body": {"data": _encode_part("Original text")},
+        }
+    ]
+    if html:
+        parts.append(
+            {
+                "mimeType": "text/html",
+                "body": {"data": _encode_part("<p>Original <b>html</b></p>")},
+            }
+        )
+    if with_attachment:
+        parts.append(
+            {
+                "filename": "bericht.pdf",
+                "mimeType": "application/pdf",
+                "body": {"attachmentId": "att1", "size": 10},
+            }
+        )
+    return {
+        "payload": {"mimeType": "multipart/mixed", "headers": headers, "parts": parts}
+    }
+
+
+@pytest.mark.asyncio
+async def test_draft_forward_builds_gmail_style_forward_with_signature_and_attachment():
+    service = _mock_gmail_service()
+    service.users().settings().sendAs().list().execute.return_value = {
+        "sendAs": [
+            {
+                "sendAsEmail": "user@example.com",
+                "isPrimary": True,
+                "signature": "<div>Gruss<br>Felix</div>",
+            }
+        ]
+    }
+    service.users().messages().get().execute.return_value = _forward_original(
+        with_attachment=True
+    )
+    service.users().messages().attachments().get().execute.return_value = {
+        "data": base64.urlsafe_b64encode(b"PDFDATA").decode(),
+        "size": 7,
+    }
+    service.users().drafts().create().execute.return_value = {"id": "fwd1"}
+
+    result = await _unwrap(draft_gmail_message)(
+        service=service,
+        user_google_email="user@example.com",
+        to="x@example.com",
+        body="Zur Info",
+        thread_id="thread_ignored",
+        forward_message_id="orig1",
+    )
+
+    assert "Forward draft created with 1 attachment(s)! Draft ID: fwd1" in result
+    create = service.users.return_value.drafts.return_value.create.call_args.kwargs
+    # Like send: the forward is not attached to a thread.
+    assert "threadId" not in create["body"]["message"]
+    service.users.return_value.messages.return_value.send.assert_not_called()
+
+    msg = _parse_raw_message(create["body"]["message"]["raw"])
+    assert msg["Subject"] == "Fwd: Klimaanlage Wartung"
+    assert msg["To"] == "x@example.com"
+    html_part = msg.get_body(preferencelist=("html",)).get_content()
+    assert "Forwarded message" in html_part
+    assert "<b>html</b>" in html_part
+    # note, then signature, then forwarded block
+    assert (
+        html_part.index("Zur Info")
+        < html_part.index("Gruss")
+        < html_part.index("Forwarded message")
+    )
+    atts = [p for p in msg.iter_attachments()]
+    assert [a.get_filename() for a in atts] == ["bericht.pdf"]
+    assert atts[0].get_content() == b"PDFDATA"
+
+
+@pytest.mark.asyncio
+async def test_draft_forward_plain_without_attachments_or_signature():
+    service = _mock_gmail_service()
+    service.users().messages().get().execute.return_value = _forward_original(
+        html=False, with_attachment=True
+    )
+    service.users().drafts().create().execute.return_value = {"id": "fwd2"}
+
+    await _unwrap(draft_gmail_message)(
+        service=service,
+        user_google_email="user@example.com",
+        to="x@example.com",
+        subject="Eigener Betreff",
+        include_signature=False,
+        include_forwarded_attachments=False,
+        forward_message_id="orig1",
+    )
+
+    create = service.users.return_value.drafts.return_value.create.call_args.kwargs
+    msg = _parse_raw_message(create["body"]["message"]["raw"])
+    assert msg["Subject"] == "Eigener Betreff"
+    assert list(msg.iter_attachments()) == []
+    text = msg.get_body(preferencelist=("plain",)).get_content()
+    assert "---------- Forwarded message ---------" in text
+    assert "Original text" in text
+    service.users.return_value.messages.return_value.attachments.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_draft_requires_subject_and_body_without_forward():
+    with pytest.raises(UserInputError):
+        await _unwrap(draft_gmail_message)(
+            service=_mock_gmail_service(),
+            user_google_email="user@example.com",
+            to="x@example.com",
+        )
