@@ -53,6 +53,7 @@ calendar:
     - query_freebusy
     - manage_out_of_office
     - manage_focus_time
+    - manage_working_location
   complete: []
 
 docs:

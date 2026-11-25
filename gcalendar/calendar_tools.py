@@ -2528,6 +2528,438 @@ async def manage_focus_time(
 
 
 # ---------------------------------------------------------------------------
+# Working Location event management
+# ---------------------------------------------------------------------------
+
+_WORKING_LOCATION_TYPES = {
+    "home": "homeOffice",
+    "office": "officeLocation",
+    "custom": "customLocation",
+}
+
+
+def _working_location_time_entry(
+    time_str: str, timezone: Optional[str] = None
+) -> Dict[str, str]:
+    """Build a start/end dict for a Working Location event.
+
+    Date-only values (YYYY-MM-DD) create an all-day event; RFC3339 values a timed one.
+    """
+    if "T" not in time_str:
+        return {"date": time_str}
+
+    has_explicit_offset = time_str.endswith("Z") or bool(
+        re.search(r"[+-]\d{2}:\d{2}$", time_str)
+    )
+    if not has_explicit_offset and not timezone:
+        raise ValueError(
+            "Working Location events require either a timezone parameter or a "
+            "start/end timestamp with an explicit UTC offset."
+        )
+
+    entry: Dict[str, str] = {"dateTime": time_str}
+    if timezone:
+        entry["timeZone"] = timezone
+    return entry
+
+
+def _working_location_patch_time(
+    time_str: str, timezone: Optional[str]
+) -> Dict[str, Optional[str]]:
+    entry: Dict[str, Optional[str]] = dict(
+        _working_location_time_entry(time_str, timezone=timezone)
+    )
+    if "date" in entry:
+        entry.update(dateTime=None, timeZone=None)
+    else:
+        entry["date"] = None
+    return entry
+
+
+def _build_working_location_properties(
+    location_type: str, label: Optional[str], function_name: str
+) -> Dict[str, Any]:
+    normalized = location_type.lower().strip()
+    if normalized not in _WORKING_LOCATION_TYPES:
+        raise ValueError(
+            f"[{function_name}] Invalid location_type '{location_type}'. "
+            f"Must be one of: {', '.join(sorted(_WORKING_LOCATION_TYPES))}"
+        )
+    if normalized == "home":
+        return {"type": "homeOffice", "homeOffice": {}}
+    if not label:
+        raise ValueError(
+            f"[{function_name}] label is required for location_type '{normalized}'."
+        )
+    api_type = _WORKING_LOCATION_TYPES[normalized]
+    return {"type": api_type, api_type: {"label": label}}
+
+
+def _working_location_label(item: Dict[str, Any]) -> str:
+    props = item.get("workingLocationProperties", {})
+    loc_type = props.get("type", "N/A")
+    label = props.get(loc_type, {}).get("label") if loc_type != "N/A" else None
+    return f"{loc_type} ({label})" if label else loc_type
+
+
+async def _create_working_location_event_impl(
+    service,
+    user_google_email: str,
+    start_time: str,
+    end_time: str,
+    location_type: str,
+    calendar_id: str = "primary",
+    label: Optional[str] = None,
+    recurrence: Optional[List[str]] = None,
+    timezone: Optional[str] = None,
+) -> str:
+    """Internal implementation for creating a Working Location calendar event."""
+    logger.info(
+        f"[create_working_location_event] Invoked. Email: '{user_google_email}', Start: {start_time}, End: {end_time}"
+    )
+
+    location_props = _build_working_location_properties(
+        location_type, label, "create_working_location_event"
+    )
+
+    event_body: Dict[str, Any] = {
+        "eventType": "workingLocation",
+        "start": _working_location_time_entry(start_time, timezone=timezone),
+        "end": _working_location_time_entry(end_time, timezone=timezone),
+        "workingLocationProperties": location_props,
+        "transparency": "transparent",
+        "visibility": "public",
+    }
+    if recurrence:
+        event_body["recurrence"] = recurrence
+
+    created_event = await asyncio.to_thread(
+        lambda: (
+            service.events().insert(calendarId=calendar_id, body=event_body).execute()
+        )
+    )
+
+    event_id = created_event.get("id", "N/A")
+    link = created_event.get("htmlLink", "N/A")
+    start_display = created_event.get("start", {}).get(
+        "date", created_event.get("start", {}).get("dateTime", "N/A")
+    )
+    end_display = created_event.get("end", {}).get(
+        "date", created_event.get("end", {}).get("dateTime", "N/A")
+    )
+
+    confirmation = (
+        f"Successfully created Working Location event for {user_google_email}.\n"
+        f"- Location: {_working_location_label({'workingLocationProperties': location_props})}\n"
+        f"- Start: {start_display}\n"
+        f"- End: {end_display}\n"
+        f"- Event ID: {event_id}\n"
+        f"- Link: {link}"
+    )
+
+    logger.info(
+        f"Working Location event created successfully for {user_google_email}. ID: {event_id}"
+    )
+    return confirmation
+
+
+async def _list_working_location_events_impl(
+    service,
+    user_google_email: str,
+    calendar_id: str = "primary",
+    time_min: Optional[str] = None,
+    time_max: Optional[str] = None,
+    max_results: int = 10,
+    timezone: Optional[str] = None,
+) -> str:
+    """Internal implementation for listing Working Location calendar events."""
+    logger.info(
+        f"[list_working_location_events] Invoked. Email: '{user_google_email}', time_min: {time_min}, time_max: {time_max}, timezone: {timezone}"
+    )
+
+    formatted_time_min = _correct_time_format_for_api(time_min, "time_min", timezone)
+    if formatted_time_min:
+        effective_time_min = formatted_time_min
+    else:
+        effective_time_min = (
+            datetime.datetime.now(datetime.timezone.utc)
+            .isoformat()
+            .replace("+00:00", "Z")
+        )
+
+    effective_time_max = _correct_time_format_for_api(time_max, "time_max", timezone)
+
+    request_params: Dict[str, Any] = {
+        "calendarId": calendar_id,
+        "timeMin": effective_time_min,
+        "maxResults": max_results,
+        "singleEvents": True,
+        "orderBy": "startTime",
+        "eventTypes": ["workingLocation"],
+    }
+    if effective_time_max:
+        request_params["timeMax"] = effective_time_max
+
+    events_result = await asyncio.to_thread(
+        lambda: service.events().list(**request_params).execute()
+    )
+    items = events_result.get("items", [])
+
+    if not items:
+        return f"No Working Location events found for {user_google_email}."
+
+    lines = [f"Found {len(items)} Working Location event(s) for {user_google_email}:\n"]
+    for i, item in enumerate(items, 1):
+        start = item.get("start", {}).get(
+            "date", item.get("start", {}).get("dateTime", "N/A")
+        )
+        end = item.get("end", {}).get(
+            "date", item.get("end", {}).get("dateTime", "N/A")
+        )
+        lines.append(f"{i}. {_working_location_label(item)} ({start} to {end})")
+        lines.append(f"   Event ID: {item.get('id', 'N/A')}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip()
+
+
+async def _update_working_location_event_impl(
+    service,
+    user_google_email: str,
+    event_id: str,
+    calendar_id: str = "primary",
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    location_type: Optional[str] = None,
+    label: Optional[str] = None,
+    recurrence: Optional[List[str]] = None,
+    timezone: Optional[str] = None,
+) -> str:
+    """Internal implementation for updating a Working Location calendar event."""
+    logger.info(
+        f"[update_working_location_event] Invoked. Email: '{user_google_email}', Event ID: {event_id}"
+    )
+
+    existing_event = await asyncio.to_thread(
+        lambda: service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+    )
+
+    if existing_event.get("eventType") != "workingLocation":
+        raise ValueError(
+            f"Event '{event_id}' is not a Working Location event (type: '{existing_event.get('eventType', 'default')}'). "
+            f"Use manage_event to update regular events."
+        )
+
+    patch_body: Dict[str, Any] = {}
+
+    # events.patch merges nested objects; null removes the stale counterpart key.
+    if start_time is not None:
+        patch_body["start"] = _working_location_patch_time(start_time, timezone)
+    if end_time is not None:
+        patch_body["end"] = _working_location_patch_time(end_time, timezone)
+    if recurrence is not None:
+        patch_body["recurrence"] = recurrence
+
+    if location_type is not None or label is not None:
+        existing_props = existing_event.get("workingLocationProperties", {})
+        existing_type = existing_props.get("type", "")
+        reverse_types = {v: k for k, v in _WORKING_LOCATION_TYPES.items()}
+        effective_type = location_type or reverse_types.get(existing_type, "")
+        effective_label = (
+            label
+            if label is not None
+            else existing_props.get(existing_type, {}).get("label")
+        )
+        new_props = _build_working_location_properties(
+            effective_type, effective_label, "update_working_location_event"
+        )
+        for api_type in _WORKING_LOCATION_TYPES.values():
+            new_props.setdefault(api_type, None)
+        patch_body["workingLocationProperties"] = new_props
+
+    if not patch_body:
+        return f"No changes specified for Working Location event '{event_id}'."
+
+    updated_event = await asyncio.to_thread(
+        lambda: (
+            service.events()
+            .patch(calendarId=calendar_id, eventId=event_id, body=patch_body)
+            .execute()
+        )
+    )
+
+    link = updated_event.get("htmlLink", "N/A")
+    start_display = updated_event.get("start", {}).get(
+        "date", updated_event.get("start", {}).get("dateTime", "N/A")
+    )
+    end_display = updated_event.get("end", {}).get(
+        "date", updated_event.get("end", {}).get("dateTime", "N/A")
+    )
+
+    confirmation = (
+        f"Successfully updated Working Location event (ID: {event_id}) for {user_google_email}.\n"
+        f"- Location: {_working_location_label(updated_event)}\n"
+        f"- Start: {start_display}\n"
+        f"- End: {end_display}\n"
+        f"- Link: {link}"
+    )
+
+    logger.info(
+        f"Working Location event updated successfully for {user_google_email}. ID: {event_id}"
+    )
+    return confirmation
+
+
+async def _delete_working_location_event_impl(
+    service,
+    user_google_email: str,
+    event_id: str,
+    calendar_id: str = "primary",
+) -> str:
+    """Internal implementation for deleting a Working Location calendar event."""
+    logger.info(
+        f"[delete_working_location_event] Invoked. Email: '{user_google_email}', Event ID: {event_id}"
+    )
+
+    try:
+        existing_event = await asyncio.to_thread(
+            lambda: (
+                service.events().get(calendarId=calendar_id, eventId=event_id).execute()
+            )
+        )
+        if existing_event.get("eventType") != "workingLocation":
+            raise ValueError(
+                f"Event '{event_id}' is not a Working Location event (type: '{existing_event.get('eventType', 'default')}'). "
+                f"Use manage_event to delete regular events."
+            )
+    except HttpError as get_error:
+        if get_error.resp.status == 404:
+            raise Exception(
+                f"Event not found. The event with ID '{event_id}' could not be found in calendar '{calendar_id}'."
+            )
+        else:
+            raise
+
+    await asyncio.to_thread(
+        lambda: (
+            service.events().delete(calendarId=calendar_id, eventId=event_id).execute()
+        )
+    )
+
+    confirmation = f"Successfully deleted Working Location event (ID: {event_id}) from calendar '{calendar_id}' for {user_google_email}."
+    logger.info(
+        f"Working Location event deleted successfully for {user_google_email}. ID: {event_id}"
+    )
+    return confirmation
+
+
+@server.tool(
+    title="Manage Working Location",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+@handle_http_errors("manage_working_location", service_type="calendar")
+@require_google_service("calendar", "calendar_events")
+async def manage_working_location(
+    service,
+    user_google_email: str,
+    action: str,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    location_type: Optional[str] = None,
+    label: Optional[str] = None,
+    recurrence: Optional[StringList] = None,
+    timezone: Optional[str] = None,
+    time_min: Optional[str] = None,
+    time_max: Optional[str] = None,
+    max_results: int = 10,
+    event_id: Optional[str] = None,
+    calendar_id: str = "primary",
+) -> str:
+    """
+    Manages Working Location events on Google Calendar (Home, Office or a custom
+    location), shown in the calendar's day header and visible to colleagues.
+
+    Args:
+        user_google_email (str): The user's Google email address. Required.
+        action (str): Action to perform - "create", "list", "update", or "delete".
+        start_time (Optional[str]): Start date/time. Use 'YYYY-MM-DD' for an all-day event or RFC3339 for a timed one (e.g., '2026-04-05T09:00:00+02:00'). Required for create.
+        end_time (Optional[str]): End date/time (exclusive). Same format as start_time. For a single all-day event on April 5, use start_time='2026-04-05' and end_time='2026-04-06'. Required for create.
+        location_type (Optional[str]): One of "home", "office", "custom". Required for create.
+        label (Optional[str]): Name of the place, e.g. "Büro". Required for "office" and "custom"; ignored for "home".
+        recurrence (Optional[List[str]]): RFC5545 recurrence rules, e.g. ["RRULE:FREQ=WEEKLY;BYDAY=MO,TU;COUNT=10"].
+        timezone (Optional[str]): Timezone (e.g., "Europe/Berlin"). Required for timed values without an explicit UTC offset.
+        time_min (Optional[str]): For "list" action: start of time range. Defaults to current time. Recurring series are expanded into individual instances.
+        time_max (Optional[str]): For "list" action: end of time range.
+        max_results (int): For "list" action: maximum events to return. Defaults to 10.
+        event_id (Optional[str]): Event ID. Required for "update" and "delete" actions.
+        calendar_id (str): Calendar ID. Defaults to 'primary'. Working Location events live on primary calendars.
+
+    Returns:
+        str: Confirmation message with event details, or a formatted list of Working Location events.
+    """
+    action_lower = action.lower().strip()
+    if action_lower == "create":
+        if not start_time or not end_time:
+            raise ValueError("start_time and end_time are required for create action")
+        if not location_type:
+            raise ValueError("location_type is required for create action")
+        return await _create_working_location_event_impl(
+            service=service,
+            user_google_email=user_google_email,
+            start_time=start_time,
+            end_time=end_time,
+            location_type=location_type,
+            calendar_id=calendar_id,
+            label=label,
+            recurrence=recurrence,
+            timezone=timezone,
+        )
+    elif action_lower == "list":
+        return await _list_working_location_events_impl(
+            service=service,
+            user_google_email=user_google_email,
+            calendar_id=calendar_id,
+            time_min=time_min,
+            time_max=time_max,
+            max_results=max_results,
+            timezone=timezone,
+        )
+    elif action_lower == "update":
+        if not event_id:
+            raise ValueError("event_id is required for update action")
+        return await _update_working_location_event_impl(
+            service=service,
+            user_google_email=user_google_email,
+            event_id=event_id,
+            calendar_id=calendar_id,
+            start_time=start_time,
+            end_time=end_time,
+            location_type=location_type,
+            label=label,
+            recurrence=recurrence,
+            timezone=timezone,
+        )
+    elif action_lower == "delete":
+        if not event_id:
+            raise ValueError("event_id is required for delete action")
+        return await _delete_working_location_event_impl(
+            service=service,
+            user_google_email=user_google_email,
+            event_id=event_id,
+            calendar_id=calendar_id,
+        )
+    else:
+        raise ValueError(
+            f"Invalid action '{action_lower}'. Must be 'create', 'list', 'update', or 'delete'."
+        )
+
+
+# ---------------------------------------------------------------------------
 # Legacy single-action tools (deprecated -- prefer ``manage_event``)
 # ---------------------------------------------------------------------------
 
