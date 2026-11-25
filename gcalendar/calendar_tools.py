@@ -2563,6 +2563,19 @@ def _working_location_time_entry(
     return entry
 
 
+def _working_location_patch_time(
+    time_str: str, timezone: Optional[str]
+) -> Dict[str, Optional[str]]:
+    entry: Dict[str, Optional[str]] = dict(
+        _working_location_time_entry(time_str, timezone=timezone)
+    )
+    if "date" in entry:
+        entry.update(dateTime=None, timeZone=None)
+    else:
+        entry["date"] = None
+    return entry
+
+
 def _build_working_location_properties(
     location_type: str, label: Optional[str], function_name: str
 ) -> Dict[str, Any]:
@@ -2739,12 +2752,11 @@ async def _update_working_location_event_impl(
 
     patch_body: Dict[str, Any] = {}
 
+    # events.patch merges nested objects; null removes the stale counterpart key.
     if start_time is not None:
-        patch_body["start"] = _working_location_time_entry(
-            start_time, timezone=timezone
-        )
+        patch_body["start"] = _working_location_patch_time(start_time, timezone)
     if end_time is not None:
-        patch_body["end"] = _working_location_time_entry(end_time, timezone=timezone)
+        patch_body["end"] = _working_location_patch_time(end_time, timezone)
     if recurrence is not None:
         patch_body["recurrence"] = recurrence
 
@@ -2758,9 +2770,12 @@ async def _update_working_location_event_impl(
             if label is not None
             else existing_props.get(existing_type, {}).get("label")
         )
-        patch_body["workingLocationProperties"] = _build_working_location_properties(
+        new_props = _build_working_location_properties(
             effective_type, effective_label, "update_working_location_event"
         )
+        for api_type in _WORKING_LOCATION_TYPES.values():
+            new_props.setdefault(api_type, None)
+        patch_body["workingLocationProperties"] = new_props
 
     if not patch_body:
         return f"No changes specified for Working Location event '{event_id}'."

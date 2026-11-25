@@ -203,8 +203,59 @@ async def test_update_label_keeps_existing_type():
         "workingLocationProperties": {
             "type": "officeLocation",
             "officeLocation": {"label": "Büro Mombach"},
+            "homeOffice": None,
+            "customLocation": None,
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_update_type_change_nulls_old_location_key():
+    mock_service = _create_mock_service()
+    mock_service.events().get().execute = Mock(
+        return_value={
+            "eventType": "workingLocation",
+            "workingLocationProperties": {
+                "type": "officeLocation",
+                "officeLocation": {"label": "Büro"},
+            },
+        }
+    )
+
+    await _update_working_location_event_impl(
+        service=mock_service,
+        user_google_email="user@example.com",
+        event_id="wl1",
+        location_type="home",
+    )
+
+    props = mock_service.events().patch.call_args[1]["body"][
+        "workingLocationProperties"
+    ]
+    assert props["type"] == "homeOffice"
+    assert props["homeOffice"] == {}
+    assert props["officeLocation"] is None
+    assert props["customLocation"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_switching_all_day_to_timed_nulls_date():
+    mock_service = _create_mock_service()
+    mock_service.events().get().execute = Mock(
+        return_value={"eventType": "workingLocation"}
+    )
+
+    await _update_working_location_event_impl(
+        service=mock_service,
+        user_google_email="user@example.com",
+        event_id="wl1",
+        start_time="2026-04-05T09:00:00+02:00",
+        end_time="2026-04-06",
+    )
+
+    body = mock_service.events().patch.call_args[1]["body"]
+    assert body["start"] == {"dateTime": "2026-04-05T09:00:00+02:00", "date": None}
+    assert body["end"] == {"date": "2026-04-06", "dateTime": None, "timeZone": None}
 
 
 @pytest.mark.asyncio
